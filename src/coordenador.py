@@ -18,13 +18,16 @@ load_dotenv()
 
 # folder_path = '/path/to/your/folder'
 # files = os.listdir(folder_path)
+# Cache para documentos processados em chunks
+document_cache = {}
+
 @tool
 def pdf_converter(filename: str) -> str:
     """
     FERRAMENTA OBRIGATÓRIA para consultar documentos universitários.
     Use para qualquer pergunta sobre regulamentos ou vida acadêmica.
     Parâmetro: nome do arquivo (ex: 'regulamento', 'regulamento.pdf')
-    A ferramenta automaticamente processa PDFs e JSONs.
+    A ferramenta automaticamente processa PDFs e JSONs com sistema de chunks inteligente.
     """
     try:
         # Define o diretório base onde os PDFs ficam armazenados
@@ -46,6 +49,11 @@ def pdf_converter(filename: str) -> str:
         if not pdf_path.exists(): 
             return f"PDF não encontrado em: {pdf_path}. Certifique-se de que o arquivo está na pasta 'documentos'."
         
+        # Verifica se já está em cache
+        cache_key = str(pdf_path)
+        if cache_key in document_cache:
+            return _get_relevant_chunks(document_cache[cache_key])
+        
         # Se não existe o JSON, converte o pdf
         if not json_path.exists():
             converter = DocumentConverter()
@@ -61,10 +69,86 @@ def pdf_converter(filename: str) -> str:
             with open(json_path, "r", encoding="utf-8") as f:
                 json_data = json.load(f)
         
-        return json.dumps(json_data, indent=2, ensure_ascii=False)
+        # Processa o documento em chunks e armazena no cache
+        chunks = _create_chunks(json_data)
+        document_cache[cache_key] = chunks
+        
+        # Retorna chunks relevantes (ao invés do documento completo)
+        return _get_relevant_chunks(chunks)
     
     except Exception as e:
         return f"Erro ao processar o arquivo: {str(e)}"
+
+def _create_chunks(json_data, max_chunk_size=2000):
+    """Divide o documento em chunks baseados em seções lógicas"""
+    chunks = []
+    
+    # Extrai texto do JSON (dependendo da estrutura do docling)
+    if isinstance(json_data, dict) and 'main_text' in json_data:
+        full_text = json_data['main_text']
+    else:
+        full_text = json.dumps(json_data, ensure_ascii=False)
+    
+    # Divide por seções (procura por títulos, capítulos, etc.)
+    sections = _split_by_sections(full_text)
+    
+    # Se as seções ainda são muito grandes, divide por tamanho
+    for section in sections:
+        if len(section) <= max_chunk_size:
+            chunks.append(section)
+        else:
+            # Divide seção grande em pedaços menores
+            for i in range(0, len(section), max_chunk_size):
+                chunk = section[i:i+max_chunk_size]
+                chunks.append(chunk)
+    
+    return chunks
+
+def _split_by_sections(text):
+    """Divide texto por seções lógicas (capítulos, artigos, etc.)"""
+    import re
+    
+    # Padrões comuns em regulamentos
+    section_patterns = [
+        r'\n\s*CAPÍTULO\s+[IVX\d]+',  # Capítulos
+        r'\n\s*Art\.\s*\d+',          # Artigos
+        r'\n\s*Seção\s+[IVX\d]+',     # Seções
+        r'\n\s*\d+\.\s*[A-Z]'         # Numeração tipo "1. TÍTULO"
+    ]
+    
+    # Tenta dividir por padrões
+    for pattern in section_patterns:
+        matches = list(re.finditer(pattern, text, re.IGNORECASE))
+        if len(matches) > 3:  # Se encontrou divisões suficientes
+            sections = []
+            for i, match in enumerate(matches):
+                start = match.start()
+                end = matches[i+1].start() if i+1 < len(matches) else len(text)
+                section = text[start:end].strip()
+                if section:
+                    sections.append(section)
+            return sections
+    
+    # Se não encontrou padrões, divide por parágrafos
+    return [p.strip() for p in text.split('\n\n') if p.strip()]
+
+def _get_relevant_chunks(chunks, max_chunks=5):
+    """Retorna os chunks mais relevantes (por agora retorna os primeiros)"""
+    # FUTURO: Aqui poderia implementar busca semântica baseada na pergunta
+    # Por agora, retorna os primeiros chunks + índice
+    
+    preview = f"DOCUMENTO DIVIDIDO EM {len(chunks)} SEÇÕES\n\n"
+    preview += "ÍNDICE:\n"
+    for i, chunk in enumerate(chunks[:10], 1):  # Mostra índice das 10 primeiras
+        title = chunk[:100].replace('\n', ' ').strip()
+        preview += f"{i}. {title}...\n"
+    
+    preview += f"\n--- CONTEÚDO DAS PRIMEIRAS {min(max_chunks, len(chunks))} SEÇÕES ---\n\n"
+    
+    for i, chunk in enumerate(chunks[:max_chunks], 1):
+        preview += f"=== SEÇÃO {i} ===\n{chunk}\n\n"
+    
+    return preview
 
 
 
@@ -108,7 +192,7 @@ Você: [usa pdf_converter("regulamento")] + "Segundo o regulamento geral da UFCG
 # 
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
-    temperature=0.2) #"criatividade" do modelo, quanto mais baixo, mais restrito
+    temperature=0.3) #"criatividade" do modelo, quanto mais baixo, mais restrito
 
 # O propmpt consiste essencialmente das instruções iniciais do modelo, das mensagens antigas e da nova mensagem, apesar
 #dos chats online darem a ilusão de que a plataforma está se lembrando da conversa, na verdade ela precisa processar 

@@ -1,0 +1,13 @@
+Exemplo de regulamento de Ciência da Computação - UFCG
+
+Este é apenas um exemplo para demonstrar como o sistema funcionaria com múltiplos documentos.
+
+HORAS DE EXTENSÃO:
+- Mínimo de 360 horas de extensão
+- Pode ser integralizada através de projetos de extensão
+- Monitoria pode contar até 120 horas
+
+ESTRUTURA CURRICULAR:
+- 8 períodos
+- 2400 horas totais
+- 15% das horas em extensão
