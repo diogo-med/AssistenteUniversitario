@@ -13,11 +13,28 @@ import json
 load_dotenv()
 
 
+@tool
+def get_files_names() -> str:
+    """
+    Lista todos os arquivos disponíveis na pasta documentos em ordem alfabética.
+    Use esta ferramenta SEMPRE PRIMEIRO antes de qualquer consulta sobre regulamentação.
+    """
+    try:
+        base_dir = Path(__file__).parent.parent / "documentos"
+        if not base_dir.exists():
+            return "Pasta documentos não encontrada."
+            
+        files = sorted([f.name for f in base_dir.iterdir() if f.is_file()])
+        
+        if not files:
+            return "Nenhum arquivo encontrado na pasta documentos."
+        
+        return f"Arquivos disponíveis: {', '.join(files)}"
+        
+    except Exception as e:
+        return f"Erro ao listar arquivos: {str(e)}"
 
-# import os
 
-# folder_path = '/path/to/your/folder'
-# files = os.listdir(folder_path)
 @tool
 def pdf_converter(filename: str) -> str:
     """
@@ -27,10 +44,10 @@ def pdf_converter(filename: str) -> str:
     A ferramenta automaticamente processa PDFs e JSONs.
     """
     try:
-        # Define o diretório base onde os PDFs ficam armazenados
-        base_dir = Path(__file__).parent.parent / "documentos"  # pasta documentos na raiz do projeto
+        base_dir = Path(__file__).parent.parent / "documentos"
         
         # Processa o nome do arquivo
+        filename = filename.strip()
         if filename.endswith(".json"):
             json_path = base_dir / filename
             pdf_path = json_path.with_suffix(".pdf")
@@ -38,28 +55,29 @@ def pdf_converter(filename: str) -> str:
             pdf_path = base_dir / filename
             json_path = pdf_path.with_suffix(".json")
         else:
-            # Caso sem extensão se assume que o pdf deve ser lido
             pdf_path = base_dir / f"{filename}.pdf"
             json_path = base_dir / f"{filename}.json"
 
-        # Verifica se o PDF existe
-        if not pdf_path.exists(): 
-            return f"PDF não encontrado em: {pdf_path}. Certifique-se de que o arquivo está na pasta 'documentos'."
-        
-        # Se não existe o JSON, converte o pdf
-        if not json_path.exists():
-            converter = DocumentConverter()
-            result = converter.convert(str(pdf_path))
-            # Extrai o documento
-            document = result.document
-            json_data = document.export_to_dict()
-            # Salva o novo JSON
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(json_data, f, indent=2, ensure_ascii=False)
-        # Se o JSON já existe, lê o conteúdo
-        else:
+        if json_path.exists():
             with open(json_path, "r", encoding="utf-8") as f:
                 json_data = json.load(f)
+        else:
+            if not pdf_path.exists():
+                available_files = [f.name for f in base_dir.glob("*.pdf")]
+                return f"PDF não encontrado: {pdf_path.name}. Arquivos PDF disponíveis: {', '.join(available_files) if available_files else 'Nenhum'}"
+            
+            # Converte o PDF
+            converter = DocumentConverter()
+            result = converter.convert(str(pdf_path))
+            document = result.document
+            json_data = document.export_to_dict()
+            
+            # Salva o JSON (se conseguir)
+            try:
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(json_data, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass  # Continua mesmo se não conseguir salvar
         
         return json.dumps(json_data, indent=2, ensure_ascii=False)
     
@@ -67,41 +85,20 @@ def pdf_converter(filename: str) -> str:
         return f"Erro ao processar o arquivo: {str(e)}"
 
 
-
-tools = [pdf_converter] #Lista de ferramentas que podem ser usadas pelo agente
+tools = [pdf_converter,get_files_names] #Lista de ferramentas que podem ser usadas pelo agente
 
 # As primeiras linhas do template servem como instrunções "persistentes" para o modelo 
 #enquanto que o Histórico de mensagens pode ser gerenciado de forma que mensagens mais antigas sejam removidas#
-template = """Você é um assistente universitário especializado em regulamentos da universidade.
-Você deve responder de forma clara e objetiva, sempre consultando o regulamento da universidade.
-Explicar termos técnicos ou processos complexos de forma didática.
+template = """
+INSTRUÇÕES OBRIGATÓRIAS:
 
-REGRAS OBRIGATÓRIAS:
-1. SEMPRE que o usuário perguntar sobre regulamentos, vida acadêmica, ou mencionar documentos, USE IMEDIATAMENTE a ferramenta pdf_converter.
-2. Para usar a ferramenta: pdf_converter("regulamento.pdf") ou pdf_converter("regulamento")
-3. NUNCA peça o nome do arquivo - sempre tente "regulamento" primeiro.
-4. A ferramenta pdf_converter lida automaticamente com PDFs e JSONs.
-5. NUNCA diga que não tem acesso aos documentos.
-6. SEMPRE use a ferramenta ANTES de responder qualquer pergunta sobre regulamentos.
-7. NUNCA sugira ao usuário procurar o documento em outro lugar - você TEM acesso ao documento, EXCETO quando:
-   - A pergunta não é sobre regulamentação (ex: "qual o sentido da vida?")
-   - O usuário pergunta sobre regulamentos de OUTRAS instituições (ex: FACISA, UEPB)
-   - O usuário pergunta sobre regulamentos ESPECÍFICOS de cursos (que não estão no regulamento geral)
-8. NUNCA recomende "leitura completa" ou "entre em contato com a secretaria" - responda diretamente baseado no documento.
+1. Para perguntas sobre regulamentos universitários: SEMPRE use pdf_converter("regulamento")
+2. Responda APENAS com base no conteúdo retornado pela ferramenta
+3. NUNCA diga que não tem acesso - você TEM a ferramenta pdf_converter
 
-EXCEÇÕES para sugestão de novos documentos:
-- Se perguntarem sobre OUTRAS universidades: responda com base na UFCG e sugira que disponibilizem o regulamento da instituição específica.
-- Se perguntarem sobre regras ESPECÍFICAS de cursos: dê a regra geral da UFCG e sugira que disponibilizem o regulamento do curso específico.
-
-Exemplo correto para outras instituições:
-Usuário: "Como funciona na FACISA?"
-Você: [usa pdf_converter("regulamento")] + "Esta informação é baseada no regulamento da UFCG. Para informações específicas da FACISA, você pode disponibilizar o regulamento desta instituição."
-
-Exemplo correto para cursos específicos:
-Usuário: "Quantas horas de extensão preciso em Ciência da Computação?"
-Você: [usa pdf_converter("regulamento")] + "Segundo o regulamento geral da UFCG, alunos devem integralizar pelo menos X% das horas totais como extensão. Para informações específicas do curso de Ciência da Computação, você pode disponibilizar o regulamento específico do curso."
-
+Você deve usar as ferramentas disponíveis para responder.
 """
+
 
 
 
@@ -122,11 +119,16 @@ prompt = ChatPromptTemplate.from_messages([
 agent = create_tool_calling_agent(
     llm=llm,
     prompt=prompt,
-    tools=tools  
+    tools=tools  #deixa o agente ciente de quais ferramentas estão disponíveis
 )
 
-agent_executor = AgentExecutor(agent=agent, tools=tools)
-
+# agent_executor = AgentExecutor(agent=agent, tools=tools) #dá autorizção pro agente usar as ferramentas
+agent_executor = AgentExecutor(
+    agent=agent, 
+    tools=tools,
+    max_iterations=5,
+    verbose=True  # Vamos ver o que o agente está fazendo
+)
 # 
 historico = {}
 
