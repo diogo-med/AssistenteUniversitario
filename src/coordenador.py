@@ -53,8 +53,8 @@ def pdf_embedding(filename: str):
 
         # define tamanho dos chunks
         text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2000,
-        chunk_overlap=300,
+        chunk_size=800,
+        chunk_overlap=100,
         )
 
         # processa a lista de páginas do loaded_text
@@ -121,7 +121,7 @@ def search_in_document(question: str, document_name: str = "regulamento"):
         # Busca por similaridade
         results = collection.query(
             query_embeddings=[query_embedding],
-            n_results=5,  # Top 5 resultados mais similares
+            n_results=10,
             include=['documents', 'metadatas']
         )
         
@@ -170,24 +170,14 @@ tools = [pdf_embedding,list_available_documents,search_in_document] #Lista de fe
 # As primeiras linhas do template servem como instrunções "persistentes" para o modelo 
 #enquanto que o Histórico de mensagens pode ser gerenciado de forma que mensagens mais antigas sejam removidas#
 template = """
-Você é um assistente especializado em responder perguntas sobre documentos universitários.
+Você é um assistente que consulta documentos para responder perguntas.
 
-FLUXO DE TRABALHO:
-1. Se o usuário fizer uma pergunta sobre regulamentos ou documentos:
-   - Use 'search_in_document' com a pergunta e o nome do documento
-   - O documento 'regulamento' é o padrão para perguntas sobre regulamentos universitários
-
-2. Se o usuário quiser processar um novo PDF:
-   - Use 'pdf_embedding' com o nome do arquivo
-
-3. Se o usuário quiser saber quais documentos estão disponíveis:
-   - Use 'list_available_documents'
-
-REGRAS IMPORTANTES:
-- SEMPRE use as ferramentas antes de responder
-- Base suas respostas APENAS no conteúdo retornado pelas ferramentas
-- Se uma ferramenta retornar erro, explique o problema e sugira uma solução
-- Seja preciso e cite as páginas quando disponível
+REGRAS ABSOLUTAS:
+1. Sua primeira e única ação para responder ao usuário DEVE ser chamar a ferramenta `search_in_document`. Não faça mais nada antes disso.
+2. Use 'regulamento' como o `document_name`.
+3. Use a pergunta exata do usuário como o `question`.
+4. Após receber o resultado da ferramenta, e SOMENTE APÓS, resuma os pontos principais em uma resposta clara e útil. Não inclua o texto bruto da ferramenta na sua resposta final.
+5. Se o resultado da ferramenta indicar que nada foi encontrado, informe ao usuário que a informação não está no documento.
 """
 
 
@@ -196,7 +186,10 @@ REGRAS IMPORTANTES:
 # 
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
-    temperature=0.2) #"criatividade" do modelo, quanto mais baixo, mais restrito
+    temperature=0.2,
+    max_tokens=4096,  
+    max_retries=3,    
+    timeout=30) 
 
 # O propmpt consiste essencialmente das instruções iniciais do modelo, das mensagens antigas e da nova mensagem, apesar
 #dos chats online darem a ilusão de que a plataforma está se lembrando da conversa, na verdade ela precisa processar 
@@ -218,7 +211,7 @@ agent_executor = AgentExecutor(
     agent=agent, 
     tools=tools,
     max_iterations=5,
-    # verbose=True  
+    verbose=True  
 )
 # 
 historico = {}
