@@ -8,191 +8,189 @@ from langchain_core.chat_history import BaseChatMessageHistory #Classe base para
 from langchain_community.chat_message_histories import ChatMessageHistory #Classe para o histórico de mensagens de chat
 from langchain_core.tools import tool #Decorator para criar ferramentas que podem ser usadas pelo agente
 from langchain.agents import AgentExecutor, create_tool_calling_agent 
-import json
+from langchain_text_splitters import RecursiveCharacterTextSplitter #CHUNKING
+from langchain_google_genai import GoogleGenerativeAIEmbeddings #EMBEDDING
+from langchain_community.document_loaders import PyPDFLoader
+import chromadb
 
 load_dotenv()
 
 
+# Inicializa o cliente do ChromaDB -> cria um diretório para persistir os dados.
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
-# import os
-
-# folder_path = '/path/to/your/folder'
-# files = os.listdir(folder_path)
-# Cache para documentos processados em chunks
-document_cache = {}
+# define o modelo que vai gerar os embeddings
+embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
 @tool
-def pdf_converter(filename: str) -> str:
-    """
-    FERRAMENTA OBRIGATÓRIA para consultar documentos universitários.
-    Use para qualquer pergunta sobre regulamentos ou vida acadêmica.
-    Parâmetro: nome do arquivo (ex: 'regulamento', 'regulamento.pdf')
-    A ferramenta automaticamente processa PDFs e JSONs com sistema de chunks inteligente.
-    """
+def pdf_embedding(filename: str):
+    
+    """Processa um PDF: carrega, faz chunking, gera embeddings e armazena no ChromaDB.
+    Use esta ferramenta quando precisar processar um novo documento PDF."""
+
     try:
-        # Define o diretório base onde os PDFs ficam armazenados
-        base_dir = Path(__file__).parent.parent / "documentos"  # pasta documentos na raiz do projeto
+        base_dir = Path(__file__).parent.parent / "documents"
         
         # Processa o nome do arquivo
-        if filename.endswith(".json"):
-            json_path = base_dir / filename
-            pdf_path = json_path.with_suffix(".pdf")
-        elif filename.endswith(".pdf"):
-            pdf_path = base_dir / filename
-            json_path = pdf_path.with_suffix(".json")
-        else:
-            # Caso sem extensão se assume que o pdf deve ser lido
-            pdf_path = base_dir / f"{filename}.pdf"
-            json_path = base_dir / f"{filename}.json"
+        filename = filename.strip()
+        filename = Path(filename).stem
+        
+        pdf_path = base_dir / f"{filename}.pdf"
 
-        # Verifica se o PDF existe
-        if not pdf_path.exists(): 
-            return f"PDF não encontrado em: {pdf_path}. Certifique-se de que o arquivo está na pasta 'documentos'."
+        #verifica se o pdf existe
+        if not pdf_path.exists():
+            available_files = [f.name for f in base_dir.glob("*.pdf")]
+            return f"PDF não encontrado: {pdf_path.name}. Arquivos PDF disponíveis: {', '.join(available_files) if available_files else 'Nenhum'}"
         
-        # Verifica se já está em cache
-        cache_key = str(pdf_path)
-        if cache_key in document_cache:
-            return _get_relevant_chunks(document_cache[cache_key])
+        #verifica se já foi feito o embedding do pdf(ou pelo menos de algum arquivo com o nome do pdf)
+        existing_collections = [col.name for col in chroma_client.list_collections()]
+        if filename in existing_collections:
+            return f"PDF '{filename}' já foi processado e está disponível para consulta."
         
-        # Se não existe o JSON, converte o pdf
-        if not json_path.exists():
-            converter = DocumentConverter()
-            result = converter.convert(str(pdf_path))
-            # Extrai o documento
-            document = result.document
-            json_data = document.export_to_dict()
-            # Salva o novo JSON
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(json_data, f, indent=2, ensure_ascii=False)
-        # Se o JSON já existe, lê o conteúdo
-        else:
-            with open(json_path, "r", encoding="utf-8") as f:
-                json_data = json.load(f)
+        # Converte o PDF
+        loader = PyPDFLoader(pdf_path)
+        loaded_text = loader.load()
+
+        # define tamanho dos chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=100,
+        )
+
+        # processa a lista de páginas do loaded_text
+        chunks = text_splitter.split_documents(loaded_text)
+
+        # extrai o texto de cada chunk
+        chunk_texts = [chunk.page_content for chunk in chunks]
         
-        # Processa o documento em chunks e armazena no cache
-        chunks = _create_chunks(json_data)
-        document_cache[cache_key] = chunks
+        # gera os embeddings
+        embeddings = embeddings_model.embed_documents(chunk_texts)
+        collection = chroma_client.get_or_create_collection(name=filename)
+
+        # Prepara metadados com informações da página
+        metadatas = []
+        for i, chunk in enumerate(chunks):
+            metadata = {
+                "source": filename,
+                "chunk_id": i,
+                "page": chunk.metadata.get("page", 0)
+            }
+            metadatas.append(metadata)
         
-        # Retorna chunks relevantes (ao invés do documento completo)
-        return _get_relevant_chunks(chunks)
-    
+        # IDs únicos para cada chunk
+        chunk_ids = [f"{filename}_chunk_{i}" for i in range(len(chunk_texts))]
+        
+        # Adiciona à coleção
+        collection.add(
+            embeddings=embeddings,
+            documents=chunk_texts,
+            metadatas=metadatas,
+            ids=chunk_ids
+        )
+        
+        return f"PDF '{filename}' processado com sucesso! {len(chunk_texts)} chunks criados e armazenados."
+        
     except Exception as e:
         return f"Erro ao processar o arquivo: {str(e)}"
 
-def _create_chunks(json_data, max_chunk_size=2000):
-    """Divide o documento em chunks baseados em seções lógicas"""
-    chunks = []
+@tool
+def search_in_document(question: str, document_name: str = "regulamento"):
+    """
+    Busca informações em um documento já processado usando similaridade semântica.
+    Use esta ferramenta para responder perguntas baseadas no conteúdo dos documentos.
     
-    # Extrai texto do JSON (dependendo da estrutura do docling)
-    if isinstance(json_data, dict) and 'main_text' in json_data:
-        full_text = json_data['main_text']
-    else:
-        full_text = json.dumps(json_data, ensure_ascii=False)
+    Args:
+        question: A pergunta ou consulta do usuário
+        document_name: Nome do documento (sem extensão .pdf)
+    """
+    try:
+        # Verifica se a coleção existe
+        try:
+            collection = chroma_client.get_collection(name=document_name)
+        except Exception:
+            # Tenta processar o documento automaticamente
+            processing_result = pdf_embedding(f"{document_name}.pdf")
+            if "sucesso" in processing_result.lower():
+                collection = chroma_client.get_collection(name=document_name)
+            else:
+                return f"Documento '{document_name}' não encontrado. {processing_result}"
+        
+        # Gera embedding da pergunta
+        query_embedding = embeddings_model.embed_query(question)
+        
+        # Busca por similaridade
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=10,
+            include=['documents', 'metadatas']
+        )
+        
+        if not results['documents'] or not results['documents'][0]:
+            return f"Nenhuma informação relevante encontrada no documento '{document_name}' para a pergunta: {question}"
+        
+        # Formata os resultados
+        relevant_context = []
+        for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
+            if metadata and isinstance(metadata, dict):
+                page = metadata.get('page', 'N/A')
+            else:
+                page = 'N/A'
+            
+            relevant_context.append(
+                f"[Página {page}] {doc}"
+            )
+        
+        text_context = "\n\n".join(relevant_context)
+        
+        return f"""Informações encontradas no documento '{document_name}':
+        {text_context}
+        [Baseado na busca por: "{question}"]"""
+        
+    except Exception as e:
+        return f"Erro ao buscar no documento '{document_name}': {str(e)}"
     
-    # Divide por seções (procura por títulos, capítulos, etc.)
-    sections = _split_by_sections(full_text)
-    
-    # Se as seções ainda são muito grandes, divide por tamanho
-    for section in sections:
-        if len(section) <= max_chunk_size:
-            chunks.append(section)
-        else:
-            # Divide seção grande em pedaços menores
-            for i in range(0, len(section), max_chunk_size):
-                chunk = section[i:i+max_chunk_size]
-                chunks.append(chunk)
-    
-    return chunks
+@tool
+def list_available_documents():
+    """
+    Lista todos os documentos que foram processados e estão disponíveis para consulta.
+    """
+    try:
+        collections = chroma_client.list_collections()
+        if not collections:
+            return "Nenhum documento foi processado ainda. Use 'processar_pdf' para processar documentos."
+        
+        available_docs = [col.name for col in collections]
+        return f"Documentos disponíveis para consulta: {', '.join(available_docs)}"
+        
+    except Exception as e:
+        return f"Erro ao listar documentos: {str(e)}"
 
-def _split_by_sections(text):
-    """Divide texto por seções lógicas (capítulos, artigos, etc.)"""
-    import re
-    
-    # Padrões comuns em regulamentos
-    section_patterns = [
-        r'\n\s*CAPÍTULO\s+[IVX\d]+',  # Capítulos
-        r'\n\s*Art\.\s*\d+',          # Artigos
-        r'\n\s*Seção\s+[IVX\d]+',     # Seções
-        r'\n\s*\d+\.\s*[A-Z]'         # Numeração tipo "1. TÍTULO"
-    ]
-    
-    # Tenta dividir por padrões
-    for pattern in section_patterns:
-        matches = list(re.finditer(pattern, text, re.IGNORECASE))
-        if len(matches) > 3:  # Se encontrou divisões suficientes
-            sections = []
-            for i, match in enumerate(matches):
-                start = match.start()
-                end = matches[i+1].start() if i+1 < len(matches) else len(text)
-                section = text[start:end].strip()
-                if section:
-                    sections.append(section)
-            return sections
-    
-    # Se não encontrou padrões, divide por parágrafos
-    return [p.strip() for p in text.split('\n\n') if p.strip()]
-
-def _get_relevant_chunks(chunks, max_chunks=5):
-    """Retorna os chunks mais relevantes (por agora retorna os primeiros)"""
-    # FUTURO: Aqui poderia implementar busca semântica baseada na pergunta
-    # Por agora, retorna os primeiros chunks + índice
-    
-    preview = f"DOCUMENTO DIVIDIDO EM {len(chunks)} SEÇÕES\n\n"
-    preview += "ÍNDICE:\n"
-    for i, chunk in enumerate(chunks[:10], 1):  # Mostra índice das 10 primeiras
-        title = chunk[:100].replace('\n', ' ').strip()
-        preview += f"{i}. {title}...\n"
-    
-    preview += f"\n--- CONTEÚDO DAS PRIMEIRAS {min(max_chunks, len(chunks))} SEÇÕES ---\n\n"
-    
-    for i, chunk in enumerate(chunks[:max_chunks], 1):
-        preview += f"=== SEÇÃO {i} ===\n{chunk}\n\n"
-    
-    return preview
-
-
-
-tools = [pdf_converter] #Lista de ferramentas que podem ser usadas pelo agente
+tools = [pdf_embedding,list_available_documents,search_in_document] #Lista de ferramentas que podem ser usadas pelo agente
 
 # As primeiras linhas do template servem como instrunções "persistentes" para o modelo 
 #enquanto que o Histórico de mensagens pode ser gerenciado de forma que mensagens mais antigas sejam removidas#
-template = """Você é um assistente universitário especializado em regulamentos da universidade.
-Você deve responder de forma clara e objetiva, sempre consultando o regulamento da universidade.
-Explicar termos técnicos ou processos complexos de forma didática.
+template = """
+Você é um assistente que consulta documentos para responder perguntas.
 
-REGRAS OBRIGATÓRIAS:
-1. SEMPRE que o usuário perguntar sobre regulamentos, vida acadêmica, ou mencionar documentos, USE IMEDIATAMENTE a ferramenta pdf_converter.
-2. Para usar a ferramenta: pdf_converter("regulamento.pdf") ou pdf_converter("regulamento")
-3. NUNCA peça o nome do arquivo - sempre tente "regulamento" primeiro.
-4. A ferramenta pdf_converter lida automaticamente com PDFs e JSONs.
-5. NUNCA diga que não tem acesso aos documentos.
-6. SEMPRE use a ferramenta ANTES de responder qualquer pergunta sobre regulamentos.
-7. NUNCA sugira ao usuário procurar o documento em outro lugar - você TEM acesso ao documento, EXCETO quando:
-   - A pergunta não é sobre regulamentação (ex: "qual o sentido da vida?")
-   - O usuário pergunta sobre regulamentos de OUTRAS instituições (ex: FACISA, UEPB)
-   - O usuário pergunta sobre regulamentos ESPECÍFICOS de cursos (que não estão no regulamento geral)
-8. NUNCA recomende "leitura completa" ou "entre em contato com a secretaria" - responda diretamente baseado no documento.
-
-EXCEÇÕES para sugestão de novos documentos:
-- Se perguntarem sobre OUTRAS universidades: responda com base na UFCG e sugira que disponibilizem o regulamento da instituição específica.
-- Se perguntarem sobre regras ESPECÍFICAS de cursos: dê a regra geral da UFCG e sugira que disponibilizem o regulamento do curso específico.
-
-Exemplo correto para outras instituições:
-Usuário: "Como funciona na FACISA?"
-Você: [usa pdf_converter("regulamento")] + "Esta informação é baseada no regulamento da UFCG. Para informações específicas da FACISA, você pode disponibilizar o regulamento desta instituição."
-
-Exemplo correto para cursos específicos:
-Usuário: "Quantas horas de extensão preciso em Ciência da Computação?"
-Você: [usa pdf_converter("regulamento")] + "Segundo o regulamento geral da UFCG, alunos devem integralizar pelo menos X% das horas totais como extensão. Para informações específicas do curso de Ciência da Computação, você pode disponibilizar o regulamento específico do curso."
-
+REGRAS ABSOLUTAS:
+1. Sua primeira e única ação para responder ao usuário DEVE ser chamar a ferramenta `search_in_document`. Não faça mais nada antes disso.
+2. Use 'regulamento' como o `document_name`.
+3. Use a pergunta exata do usuário como o `question`.
+4. Após receber o resultado da ferramenta, e SOMENTE APÓS, resuma os pontos principais em uma resposta clara e útil. Não inclua o texto bruto da ferramenta na sua resposta final.
+5. Se o resultado da ferramenta indicar que nada foi encontrado, use-a novamente pensando passo a passo e tente responder a pergunta.
+6. Se mesmo assim não encontrar nada, informe ao usuário que a informação não está no documento.
 """
+
 
 
 
 # 
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
-    temperature=0.3) #"criatividade" do modelo, quanto mais baixo, mais restrito
+    temperature=0.2,
+    max_tokens=4096,  
+    max_retries=3,    
+    timeout=30) 
 
 # O propmpt consiste essencialmente das instruções iniciais do modelo, das mensagens antigas e da nova mensagem, apesar
 #dos chats online darem a ilusão de que a plataforma está se lembrando da conversa, na verdade ela precisa processar 
@@ -206,11 +204,16 @@ prompt = ChatPromptTemplate.from_messages([
 agent = create_tool_calling_agent(
     llm=llm,
     prompt=prompt,
-    tools=tools  
+    tools=tools  #deixa o agente ciente de quais ferramentas estão disponíveis
 )
 
-agent_executor = AgentExecutor(agent=agent, tools=tools)
-
+#dá autorizção pro agente usar as ferramentas
+agent_executor = AgentExecutor(
+    agent=agent, 
+    tools=tools,
+    max_iterations=5,
+    # verbose=True  
+)
 # 
 historico = {}
 
@@ -231,8 +234,15 @@ chain_with_history = RunnableWithMessageHistory(
 
 # 
 def iniciar_conversa_com_coordenador():
-    print("Como posso ajudar você hoje? Digite 'sair' para encerrar\n")
+    duvida = "com oq vc pode me ajudar?"
+
+    resposta = chain_with_history.invoke( 
+            {"input": duvida}, 
+            config = {"configurable": {"session_id": "user123"}})
+        
+    print(f"\nCoordenador: {resposta['output']}\n"+"Digite 'sair' para encerrar\n")
     while True:
+
         duvida = input("Você: ")
         if duvida.lower() in ["sair"]: #Encerra a conversa qnd o usuário escreve 'sair'
             print("Conversa encerrada.")
