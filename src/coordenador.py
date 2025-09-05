@@ -1,6 +1,5 @@
 from dotenv import load_dotenv
 from pathlib import Path
-from docling.document_converter import DocumentConverter
 from langchain_google_genai import ChatGoogleGenerativeAI #Classe dos modelos de chat da gemini
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder #Classe para criar templates de prompts de chat, MessagesPlaceholder é um marcador de posição para mensagens que serão preenchidas posteriormente
 from langchain_core.runnables.history import RunnableWithMessageHistory #Gerenciador do histórico de mensagens

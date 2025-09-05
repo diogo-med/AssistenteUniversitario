@@ -1,2 +1,7 @@
+# Ignorar o arquivo .env com as chaves de API
 src/.env
-chroma_db/
+
+# Ignorar o conteúdo da pasta chroma_db, mas manter a pasta no repositório
+chroma_db/*
+!chroma_db/.gitkeep
+
