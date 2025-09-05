@@ -130,20 +130,15 @@ def search_in_document(question: str, document_name: str = "regulamento"):
         # Formata os resultados
         relevant_context = []
         for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
-            if metadata and isinstance(metadata, dict):
-                page = metadata.get('page', 'N/A')
-            else:
-                page = 'N/A'
-            
-            relevant_context.append(
-                f"[Página {page}] {doc}"
-            )
+            # A informação da página é útil, mas não será mais passada para o LLM para evitar confusão.
+            # Apenas o texto do documento será usado como contexto.
+            relevant_context.append(doc)
         
         text_context = "\n\n".join(relevant_context)
         
-        return f"""Informações encontradas no documento '{document_name}':
-        {text_context}
-        [Baseado na busca por: "{question}"]"""
+        # A saída agora é mais limpa, focando apenas no contexto.
+        return f"""Contexto encontrado para a pergunta '{question}':
+        {text_context}"""
         
     except Exception as e:
         return f"Erro ao buscar no documento '{document_name}': {str(e)}"
@@ -169,15 +164,15 @@ tools = [pdf_embedding,list_available_documents,search_in_document] #Lista de fe
 # As primeiras linhas do template servem como instrunções "persistentes" para o modelo 
 #enquanto que o Histórico de mensagens pode ser gerenciado de forma que mensagens mais antigas sejam removidas#
 template = """
-Você é um assistente que consulta documentos para responder perguntas.
+Você é um assistente universitário especialista, e sua única função é responder perguntas com base no conteúdo de documentos.
 
 REGRAS ABSOLUTAS:
-1. Sua primeira e única ação para responder ao usuário DEVE ser chamar a ferramenta `search_in_document`. Não faça mais nada antes disso.
-2. Use 'regulamento' como o `document_name`.
-3. Use a pergunta exata do usuário como o `question`.
-4. Após receber o resultado da ferramenta, e SOMENTE APÓS, resuma os pontos principais em uma resposta clara e útil. Não inclua o texto bruto da ferramenta na sua resposta final.
-5. Se o resultado da ferramenta indicar que nada foi encontrado, use-a novamente pensando passo a passo e tente responder a pergunta.
-6. Se mesmo assim não encontrar nada, informe ao usuário que a informação não está no documento.
+1.  Sua primeira ação para responder ao usuário DEVE ser chamar a ferramenta `search_in_document`.
+2.  Use 'regulamento' como o `document_name` padrão, a menos que o usuário especifique outro.
+3.  Para a primeira busca, use a pergunta exata do usuário como o `question` para a ferramenta.
+4.  A ferramenta `search_in_document` te fornecerá um CONTEXTO. Use este contexto para formular uma resposta COMPLETA e DIRETA.
+5.  NUNCA, em hipótese alguma, mencione os números das páginas ou sugira que o usuário leia o documento. Sua função é ler o documento por ele e fornecer a resposta final.
+6.  Se o contexto da primeira busca parecer insuficiente ou irrelevante, tente novamente: reformule a pergunta para ser mais específica ou use palavras-chave diferentes e chame a ferramenta `search_in_document` uma segunda vez. Se a segunda busca também falhar, informe ao usuário que não encontrou a informação específica no documento. Não invente respostas.
 """
 
 
