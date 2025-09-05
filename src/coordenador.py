@@ -177,7 +177,8 @@ REGRAS ABSOLUTAS:
 2. Use 'regulamento' como o `document_name`.
 3. Use a pergunta exata do usuário como o `question`.
 4. Após receber o resultado da ferramenta, e SOMENTE APÓS, resuma os pontos principais em uma resposta clara e útil. Não inclua o texto bruto da ferramenta na sua resposta final.
-5. Se o resultado da ferramenta indicar que nada foi encontrado, informe ao usuário que a informação não está no documento.
+5. Se o resultado da ferramenta indicar que nada foi encontrado, use-a novamente pensando passo a passo e tente responder a pergunta.
+6. Se mesmo assim não encontrar nada, informe ao usuário que a informação não está no documento.
 """
 
 
@@ -211,7 +212,7 @@ agent_executor = AgentExecutor(
     agent=agent, 
     tools=tools,
     max_iterations=5,
-    verbose=True  
+    # verbose=True  
 )
 # 
 historico = {}
@@ -233,8 +234,15 @@ chain_with_history = RunnableWithMessageHistory(
 
 # 
 def iniciar_conversa_com_coordenador():
-    print("Como posso ajudar você hoje? Digite 'sair' para encerrar\n")
+    duvida = "com oq vc pode me ajudar?"
+
+    resposta = chain_with_history.invoke( 
+            {"input": duvida}, 
+            config = {"configurable": {"session_id": "user123"}})
+        
+    print(f"\nCoordenador: {resposta['output']}\n"+"Digite 'sair' para encerrar\n")
     while True:
+
         duvida = input("Você: ")
         if duvida.lower() in ["sair"]: #Encerra a conversa qnd o usuário escreve 'sair'
             print("Conversa encerrada.")
